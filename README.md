@@ -1,5 +1,3 @@
----
-
 ```markdown
 # Hierarchical Reinforcement Learning & HER Ablation Studies
 
