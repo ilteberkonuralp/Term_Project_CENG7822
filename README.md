@@ -404,13 +404,3 @@ next_state, reward, done, _ = env.step(action)
 4. **Distributional RL**: Bellemare, M., et al. "A Distributional Perspective on Reinforcement Learning." ICML 2017.
 
 ---
-
-## License
-
-This project is provided for educational and research purposes.
-
----
-
-## Author
-
-Developed as part of CENG 7822 Reinforcement Learning coursework at Middle East Technical University (METU).
