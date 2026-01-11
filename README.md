@@ -10,7 +10,7 @@ A comprehensive comparative study of goal-conditioned reinforcement learning alg
   <img src="https://gymnasium.farama.org/_images/point_maze.gif" alt="PointMaze Environment" width="300"/>
 </p>
 
-## 📋 Table of Contents
+## Table of Contents
 
 - [Overview](#overview)
 - [Project Structure](#project-structure)
@@ -26,7 +26,7 @@ A comprehensive comparative study of goal-conditioned reinforcement learning alg
 
 ---
 
-## 🎯 Overview
+## Overview
 
 ### Problem Statement
 
@@ -59,45 +59,45 @@ Two maze configurations:
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 HRL_project_all_live_viz.ipynb
 │
-├── 📦 INSTALLATION & IMPORTS (Cells 1-2)
+├── INSTALLATION & IMPORTS (Cells 1-2)
 │   ├── Package installation (gymnasium, stable-baselines3, sb3-contrib)
 │   ├── MuJoCo rendering backend configuration
 │   └── All library imports
 │
-├── ⚙️ CONFIGURATION (Cells 3-4)
+├── CONFIGURATION (Cells 3-4)
 │   ├── MAZE_CONFIGS: Environment specifications
 │   ├── ExperimentConfig: Central hyperparameter management
 │   └── FAST_MODE toggle for quick testing vs. full experiments
 │
-├── 🔧 ENVIRONMENT UTILITIES (Cells 5-8)
+├── ENVIRONMENT UTILITIES (Cells 5-8)
 │   ├── DiscreteActionWrapper: Converts continuous → discrete for DQN
 │   ├── DenseRewardWrapper: Adds distance-based shaping
 │   ├── make_env(): Factory function with all wrappers
 │   └── Debug/sanity check cells
 │
-├── 📊 VISUALIZATION (Cells 9-11)
+├── VISUALIZATION (Cells 9-11)
 │   ├── LiveLossPlotter: Real-time training curves
 │   ├── LiveRenderCallback: Evaluation during training
 │   └── Utility functions (set_seeds, etc.)
 │
-├── 🧠 TIER 1: DQN BASELINE (Cell 12)
+├── TIER 1: DQN BASELINE (Cell 12)
 │   └── train_dqn_live(): DQN with dense rewards
 │
-├── 🧠 TIER 2: DQN + HER (Cells 13-14)
+├── TIER 2: DQN + HER (Cells 13-14)
 │   └── train_dqn_her_live(): DQN with/without HER ablation
 │
-├── 🧠 SAC IMPLEMENTATION (Cell 15)
+├── SAC IMPLEMENTATION (Cell 15)
 │   └── train_sac_live(): Soft Actor-Critic with/without HER
 │
-├── 🧠 TQC IMPLEMENTATION (Cell 16)
+├── TQC IMPLEMENTATION (Cell 16)
 │   └── train_tqc_live(): Truncated Quantile Critics with/without HER
 │
-├── 🧠 TIER 3: HAC IMPLEMENTATION (Cells 17-22)
+├── TIER 3: HAC IMPLEMENTATION (Cells 17-22)
 │   ├── HACReplayBuffer: Hierarchical replay with HER support
 │   ├── HighLevelPolicy: SAC-style subgoal generation
 │   ├── LowLevelPolicyContinuous: TD3-style primitive actions
@@ -105,10 +105,10 @@ HRL_project_all_live_viz.ipynb
 │   ├── HACAgentWithHER: Full HAC with HGT/HER
 │   └── train_hac_live(), evaluate_hac()
 │
-├── 🚀 EXPERIMENT RUNNER (Cell 23)
+├── EXPERIMENT RUNNER (Cell 23)
 │   └── Main loop: all methods × all mazes × all seeds
 │
-└── 📈 RESULTS & VISUALIZATION (Cells 24-27)
+└── RESULTS & VISUALIZATION (Cells 24-27)
     ├── plot_learning_curves_by_maze()
     ├── Experiment summary statistics
     └── Comparison plots
@@ -116,7 +116,7 @@ HRL_project_all_live_viz.ipynb
 
 ---
 
-## 🧠 Algorithms Implemented
+## Algorithms Implemented
 
 ### 1. Deep Q-Network (DQN)
 
@@ -210,7 +210,7 @@ For each transition (s, a, r, s') with original goal g:
 
 ---
 
-## 🛠️ Installation
+## Installation
 
 ### Option 1: Google Colab (Recommended)
 
@@ -255,7 +255,7 @@ pip install pyvirtualdisplay
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Basic Training (Single Method)
 
@@ -300,7 +300,7 @@ plot_learning_curves_by_maze(tier1_df, tier2_df, sac_df, tqc_df, tier3_df)
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 ### ExperimentConfig Dataclass
 
@@ -361,7 +361,7 @@ MAZE_CONFIGS = {
 
 ---
 
-## 🏗️ Code Architecture
+## Code Architecture
 
 ### Environment Wrappers
 
@@ -433,7 +433,7 @@ class HACReplayBuffer:
 
 ---
 
-## 🧪 Experiments
+## Experiments
 
 ### Experimental Design
 
@@ -469,7 +469,7 @@ class HACReplayBuffer:
 
 ---
 
-## 📊 Results Visualization
+## Results Visualization
 
 ### Learning Curves
 
@@ -512,7 +512,7 @@ TQC with HER (Continuous):
 
 ---
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
 ### Common Issues
 
@@ -566,7 +566,7 @@ config.learning_starts = 20000
 
 ---
 
-## 📚 References
+## References
 
 - [DQN] Mnih et al., "Human-level control through deep reinforcement learning," Nature 2015
 - [SAC] Haarnoja et al., "Soft Actor-Critic," ICML 2018
@@ -576,7 +576,7 @@ config.learning_starts = 20000
 
 ---
 
-## 📄 Citation
+## Citation
 
 If you use this code in your research, please cite:
 
@@ -590,15 +590,9 @@ If you use this code in your research, please cite:
 }
 ```
 
----
 
-## 📝 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
----
-
-## 🤝 Acknowledgments
+## Acknowledgments
 
 - [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3) for DQN, SAC implementations
 - [SB3-Contrib](https://github.com/Stable-Baselines-Team/stable-baselines3-contrib) for TQC
@@ -607,6 +601,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ---
 
-<p align="center">
-  Made with ❤️ at METU | CENG 7822 Reinforcement Learning
-</p>
