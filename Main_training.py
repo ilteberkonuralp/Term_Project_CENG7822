@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-training.py - Parallel Runner for SAC+HER and TQC+HER (10x10 Version)
+Main_training.py
+Updated to correctly synchronize dynamic goals (checkpoints) with HAC_HER.
 """
-
 import numpy as np
 import csv
 import os
@@ -11,174 +11,166 @@ from maze import Maze
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 import torch
-import multiprocessing # Added for parallel execution
+import random
+import multiprocessing
 
-# --- IMPORTS ---
 try:
     from Sac_HER import SAC_HER_Agent
     from TQC_HER import TQC_HER_Agent
+    from HAC_HER import HAC_HER_Agent 
 except ImportError as e:
-    print(f"Error importing agents: {e}")
-    print("Ensure Sac_HER.py and TQC_HER.py are in the same directory.")
+    print("Agent modules missing. Ensure Sac_HER.py, TQC_HER.py, and HAC_HER.py are present.")
     exit()
 
-# --- SHARED CONFIGURATION ---
-RENDER_FREQUENCY = 1
-GOAL_STATE = (9, 9)   # <--- CHANGED: Fixed goal for 10x10 HER (Bottom-Right)
-TRAIN_EPISODES = 5000  # How many episodes to train per agent
+# --- CONFIGURATION ---
+GRID_SIZE = 30   
+TRAIN_EPISODES = 150
+GLOBAL_SEED = 21 
 
-def run_session(agent_type, load_model=True, render_plots=False):
-    """
-    Runs a training session for a specific agent type.
-    """
-    
-    # 1. Setup Agent Specifics
-    if agent_type == "TQC":
-        save_filename = "tqc_her_10x10_model"  # <--- CHANGED: Updated filename
-        log_filename = "training_tqc_her_log_10x10.csv"
-        learning_rate = 0.0005
-        AgentClass = TQC_HER_Agent
-        color = 'purple'
-    else: # SAC
-        save_filename = "sac_her_10x10_model"  # <--- CHANGED: Updated filename
-        log_filename = "training_sac_her_log_10x10.csv"
-        learning_rate = 0.001
-        AgentClass = SAC_HER_Agent
-        color = 'red'
+# --- Control how many intermediate sub-rewards you want ---
+NUM_CHECKPOINTS = 8  # Recommended: 4-8 for a 20x20 grid
 
-    print(f"\n[{agent_type}] Starting Session...")
-    print(f"[{agent_type}] Saving to: {save_filename}")
+# Dynamic Step Limit
+MAX_EP_STEPS = GRID_SIZE * GRID_SIZE * 2
+OUTPUT_FOLDER = f"worker_outputs_{GRID_SIZE}x{GRID_SIZE}_v2"
+
+def set_global_seeds(seed):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+def run_session(agent_type, load_model=False, render_plots=False,record_model=True):
+    set_global_seeds(GLOBAL_SEED)
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
     
+    base_name = f"{GRID_SIZE}x{GRID_SIZE}_{agent_type}"
+    save_filename = os.path.join(OUTPUT_FOLDER, f"model_{base_name}_checkpoint")
+    log_filename = os.path.join(OUTPUT_FOLDER, f"log_{base_name}.csv")
+
+    # Only HAC usually benefits from explicit sequential mode in the ENV,
+    # but for fair comparison, if we use checkpoints, we use them for all.
+    # However, standard practice: HAC needs it most.
+    if agent_type == "HAC":
+        active_checkpoints = NUM_CHECKPOINTS
+        use_sequential = True
+        print(f"[{agent_type}] Mode: Hierarchical Guided (Checkpoints: {active_checkpoints})")
+    else:
+        active_checkpoints = 0
+        use_sequential = False
+        print(f"[{agent_type}] Mode: Flat Sparse (Checkpoints: 0)")
+
+    env = Maze(
+        grid_size=GRID_SIZE, 
+        seed=GLOBAL_SEED, 
+        sequential_mode=use_sequential,
+        num_checkpoints=active_checkpoints
+    )
+
+    
+    valid_indices = env.get_valid_indices()
+
+    if agent_type == "HAC": AgentClass = HAC_HER_Agent
+    elif agent_type == "TQC": AgentClass = TQC_HER_Agent
+    else: AgentClass = SAC_HER_Agent
+
     agent_info = {
         "num_actions": 4, 
-        "num_states": 100,      # <--- CHANGED: 10x10 = 100 states (was 900)
-        "step_size": learning_rate,
+        "num_states": GRID_SIZE * GRID_SIZE,
+        "step_size": 0.001,
         "discount": 0.99, 
-        "seed": 42,
-        "grid_width": 10        # <--- CHANGED: Grid width 10 (was 30)
+        "seed": GLOBAL_SEED,
+        "grid_width": GRID_SIZE,
+        "valid_indices": valid_indices
     }
     
-    env = Maze() 
     agent = AgentClass(agent_info)
     
-    # 2. Load Model / Resume Logging
-    start_episode = 0
-    if load_model:
+    if load_model and os.path.exists(save_filename + ".pth"):
         agent.load_model(save_filename)
-        if os.path.exists(log_filename):
-            try:
-                df = pd.read_csv(log_filename)
-                if not df.empty:
-                    start_episode = df["Episode"].iloc[-1] + 1
-                    print(f"[{agent_type}] Resuming from Episode {start_episode}")
-            except:
-                pass
-
-    # 3. Initialize CSV Header
+        
     if not os.path.exists(log_filename):
         with open(log_filename, mode='w', newline='') as file:
             writer = csv.writer(file)
             writer.writerow(["Episode", "Reward", "Steps", "Critic_Loss", "Actor_Loss"])
 
-    if render_plots:
-        plt.ion()
-    
-    # 4. Training Loop
-    # We use position argument in tqdm to prevent bars from overwriting each other in parallel
-    pos = 0 if agent_type == "SAC" else 1
-    
-    for i in tqdm(range(start_episode, start_episode + TRAIN_EPISODES), desc=f"{agent_type}", position=pos):
-        state = env.reset()
+    print(f"[{agent_type}] Starting Training (Checkpoints: {NUM_CHECKPOINTS})...")
+
+    for i in tqdm(range(TRAIN_EPISODES), desc=f"{agent_type}"):
+        state = env.reset() 
+        current_active_goal = env.goal
         
-        # Pass the Goal to the agent (Required for HER)
-        action = agent.agent_start(state, GOAL_STATE)
+        # Start the agent
+        result = agent.agent_start(state, current_active_goal)
+        if isinstance(result, tuple): action, sub = result
+        else: action, sub = result, None
         
         ep_rew = 0
-        should_render = render_plots and (i % RENDER_FREQUENCY == 0)
+        should_render = render_plots and (i % 50 == 0)
 
-        if should_render:
-            env.render(i, 0)
+        if should_render: env.render(i, 0, sub)
         
-        # Episode Steps
-        t = 0
-        for t in range(1000):
+        step_count = 0
+        
+        for t in range(MAX_EP_STEPS):
             next_state, reward, done, info = env.step(action)
             ep_rew += reward
+            step_count += 1
             
             if should_render:
-                env.render(i, t+1)
-                plt.pause(0.001)
+                env.render(i, t+1, sub)
             
-            # Step the agent
-            action = agent.agent_step(reward, next_state, done)
+            # Check if environment updated the goal (Checkpoint reached)
+            new_active_goal = env.goal
             
-            if done:
-                break
-        
-        # End of Episode: Updates
-        avg_q_loss, avg_a_loss = agent.agent_end()
+            result = agent.agent_step(reward, next_state, done)
+            if isinstance(result, tuple): action, sub = result
+            else: action = result
 
-        # Log Data
+            # --- CRITICAL FIX: SYNC GOAL UPDATE ---
+            if new_active_goal != current_active_goal and not done:
+                # 1. Update TQC/SAC (uses curr_goal_idx)
+                if hasattr(agent, "curr_goal_idx"):
+                    agent.curr_goal_idx = agent._get_idx(new_active_goal)
+                
+                # 2. Update HAC (uses final_goal_idx for Meta)
+                if hasattr(agent, "final_goal_idx"):
+                    agent.final_goal_idx = agent._get_idx(new_active_goal)
+                    # Optional: Force Meta to re-evaluate subgoal immediately
+                    # But HAC usually waits for subgoal_horizon. 
+                    # We let HAC finish its current subgoal naturally.
+                
+                current_active_goal = new_active_goal
+            # --------------------------------------
+            
+            if done: break
+        
+        # Agent End (HAC now loops internally here)
+        q, a = agent.agent_end()
+
         with open(log_filename, mode='a', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow([i, ep_rew, t+1, avg_q_loss, avg_a_loss])
+            writer.writerow([i, ep_rew, step_count, q, a])
 
-        # Save Periodically
-        if i % 10 == 0:
+        #if i % 50 == 0:
+            #agent.save_model(save_filename)
+        if record_model:
             agent.save_model(save_filename)
 
-    print(f"\n[{agent_type}] Training Complete.")
-
-    # 5. Final Plot (Only if not parallel, or handled carefully)
-    if render_plots:
-        visualize_log(log_filename, agent_type, color)
-
-def visualize_log(filename, agent_name, color):
-    # Visualization logic (Same as before)
-    if os.path.exists(filename):
-        try:
-            plt.ioff()
-            data = pd.read_csv(filename)
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8))
-            
-            ax1.plot(data["Episode"], data["Reward"], alpha=0.3, color='blue')
-            if len(data) > 20:
-                rolling_mean = data["Reward"].rolling(window=20).mean()
-                ax1.plot(data["Episode"], rolling_mean, color='darkblue', linewidth=2)
-            ax1.set_title(f"Rewards ({agent_name})")
-
-            ax2.plot(data["Episode"], data["Critic_Loss"], color=color, alpha=0.6)
-            ax2.set_title(f"Critic Loss ({agent_name})")
-            
-            plt.tight_layout()
-            plt.show()
-        except Exception as e:
-            print(f"Could not plot: {e}")
+    print(f"[{agent_type}] Training Complete.")
 
 if __name__=='__main__':
-    # We utilize multiprocessing to run both agents at the same time
-    # NOTE: render_plots MUST be False for parallel runs to avoid GUI crashes
+    # Defaulting to HAC to test the new logic
+    # Ensure render_plots=True if you want to see the GUI
+    #run_session("HAC", load_model=True, render_plots=False,record_model=True)
     
-    print("Initializing Parallel Training...")
-
-    # Create Process for SAC
-    p1 = multiprocessing.Process(
-        target=run_session, 
-        args=("SAC", False, False) # Agent, Load_Model, Render_Plots
-    )
-    
-    # Create Process for TQC
-    p2 = multiprocessing.Process(
-        target=run_session, 
-        args=("TQC", False, False) # Agent, Load_Model, Render_Plots
-    )
-
-    # Start Processes
-    p1.start()
-    p2.start()
-
-    # Wait for completion
-    p1.join()
-    p2.join()
-    
-    print("\nAll parallel training sessions completed.")
+    # --- Parallel Training Block (Uncomment to use) ---
+    algorithms = ["HAC","SAC", "TQC"]
+    processes = []
+    print(f"Launching {len(algorithms)} parallel training sessions...")
+    for algo in algorithms:
+       p = multiprocessing.Process(target=run_session, args=(algo, True, False,True))
+       processes.append(p)
+       p.start()
+    for p in processes:
+       p.join()
+    print("All training sessions finished!")

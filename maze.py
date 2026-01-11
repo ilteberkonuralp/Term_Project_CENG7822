@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Spyder Editor
-
-Fixed 10x10 Maze Environment
+maze.py - Customizable Number of Checkpoints
 """
 
 import gym
@@ -12,114 +10,154 @@ from matplotlib import pyplot as plt
 import collections
 
 class Maze(gym.Env):
-    def __init__(self):
+    def __init__(self, grid_size=10, seed=42, sequential_mode=False, num_checkpoints=4):
         super(Maze, self).__init__()
         
-        # --- Configuration ---
-        self.grid_size = 10  # <--- CHANGED FROM 30 TO 10
-        self.obstacle_density = 0.25 
+        self.grid_size = grid_size
+        self.rng = np.random.RandomState(seed)
+        self.sequential_mode = sequential_mode
+        self.num_checkpoints = num_checkpoints  # <--- NEW PARAMETER
         
-        self.actions = [(-1, 0), (1, 0), (0, 1), (0, -1)] # Up, Down, Right, Left
+        self.actions = [(-1, 0), (1, 0), (0, 1), (0, -1)]
         self.action_space = spaces.Discrete(len(self.actions))
         self.observation_space = spaces.Box(low=0, high=1, shape=(self.grid_size, self.grid_size), dtype=np.int32)
         
-        # Fixed Start and Goal
-        self.start = (self.grid_size - 1, 0) # Bottom-Left
-        self.goal = (0, self.grid_size - 1)  # Top-Right
+        # --- DEFINING THE PATH ---
+        self.start = (self.grid_size - 1, 0)      # Bottom-Left
+        self.final_goal = (0, self.grid_size - 1) # Top-Right
         
-        # --- GENERATE MAP ONCE (FIXED) ---
-        # We set a seed so the 'random' walls are the same every time
-        np.random.seed(42) 
-        self.maze = self._generate_fixed_map()
+        # --- DYNAMIC CHECKPOINTS ---
+        # Calculate N evenly spaced points along the diagonal
+        self.waypoints_config = []
         
-        self.state = None
+        # If num_checkpoints is 0, we just go Start -> Goal
+        if self.num_checkpoints > 0:
+            for i in range(1, self.num_checkpoints + 1):
+                # Interpolation from Start to Goal
+                alpha = i / (self.num_checkpoints + 1)
+                r = int((self.grid_size - 1) * (1 - alpha))
+                c = int((self.grid_size - 1) * alpha)
+                self.waypoints_config.append((r, c))
+            
+        # Generate the map ONCE.
+        self.maze = self._generate_guaranteed_maze()
+        
+        self.current_waypoints = []
+        self.waypoint_index = 0
+        
         self.reset()
 
+    @property
+    def goal(self):
+        if not self.sequential_mode:
+            return self.final_goal
+        if self.waypoint_index < len(self.current_waypoints):
+            return self.current_waypoints[self.waypoint_index]
+        return self.final_goal
+
     def reset(self):
-        """
-        Resets the agent to the start position. 
-        The map does NOT change.
-        """
         self.state = self.start
+        self.current_waypoints = list(self.waypoints_config)
+        self.waypoint_index = 0
         self.done = False
         return self.state
 
-    def _generate_fixed_map(self):
-        """Generates a valid map once."""
+    def _generate_guaranteed_maze(self):
+        """
+        Generates a map and strictly validates the full chain:
+        Start -> CP1 -> CP2 -> ... -> CP_N -> Final Goal.
+        """
         while True:
-            # 0 = Empty, 1 = Wall
-            map_grid = np.zeros((self.grid_size, self.grid_size))
+            map_grid = np.zeros((self.grid_size, self.grid_size), dtype=np.int32)
             
-            # Place walls based on seed
+            # Random walls (Density 30%)
             for i in range(self.grid_size):
                 for j in range(self.grid_size):
-                    if np.random.rand() < self.obstacle_density:
+                    if self.rng.rand() < 0.3: 
                         map_grid[i, j] = 1
             
-            # Ensure Start and Goal are empty
+            # 1. Clear Walls at Critical Points
             map_grid[self.start] = 0
-            map_grid[self.goal] = 0
+            map_grid[self.final_goal] = 0
+            for wp in self.waypoints_config:
+                map_grid[wp] = 0
             
-            # If this specific seed produced a solvable map, keep it.
-            if self._is_solvable(map_grid):
+            # 2. Strict Chain Validation
+            path_points = [self.start] + self.waypoints_config + [self.final_goal]
+            all_segments_valid = True
+            
+            for i in range(len(path_points) - 1):
+                p1 = path_points[i]
+                p2 = path_points[i+1]
+                if not self._is_solvable(map_grid, p1, p2):
+                    all_segments_valid = False
+                    break 
+            
+            if all_segments_valid:
                 return map_grid
-            else:
-                # If seed 42 was bad, try the next one until we find a fixed valid map
-                # (This loop only runs once during initialization)
-                pass
 
-    def _is_solvable(self, maze):
-        """Uses BFS to check if there is a path from Start to Goal."""
-        queue = collections.deque([self.start])
-        visited = set([self.start])
-        
+    def _is_solvable(self, grid, start, goal):
+        queue = collections.deque([start])
+        visited = set([start])
         while queue:
             current = queue.popleft()
-            if current == self.goal:
-                return True
-            
-            x, y = current
+            if current == goal: return True
+            cx, cy = current
             for dx, dy in self.actions:
-                nx, ny = x + dx, y + dy
-                
-                # Check bounds
+                nx, ny = cx + dx, cy + dy
                 if 0 <= nx < self.grid_size and 0 <= ny < self.grid_size:
-                    # Check if not wall and not visited
-                    if maze[nx, ny] == 0 and (nx, ny) not in visited:
+                    if grid[nx, ny] == 0 and (nx, ny) not in visited:
                         visited.add((nx, ny))
                         queue.append((nx, ny))
         return False
 
     def step(self, action):
-        x = self.state[0] + self.actions[action][0]
-        y = self.state[1] + self.actions[action][1]
+        x, y = self.state
+        dx, dy = self.actions[action]
+        nx, ny = x + dx, y + dy
         
-        # Check Bounds
-        if x < 0 or x >= self.grid_size or y < 0 or y >= self.grid_size:
-            reward = -1
-        # Check Obstacles
-        elif self.maze[x, y] == 1:
-            reward = -1
-        # Check Goal
-        elif (x, y) == self.goal:
-            self.state = (x, y)
-            reward = 0
-            self.done = True
-            return self.state, reward, self.done, {}
-        # Normal Move
+        if nx < 0 or nx >= self.grid_size or ny < 0 or ny >= self.grid_size:
+            reward = -0.5
+            next_state = (x, y) 
+        elif self.maze[nx, ny] == 1:
+            reward = -0.5
+            next_state = (x, y) 
         else:
-            self.state = (x, y)
-            reward = -1
+            next_state = (nx, ny)
+            reward = -0.1 
+
+            current_target = self.goal
             
+            if next_state == current_target:
+                if self.sequential_mode and self.waypoint_index < len(self.current_waypoints):
+                    reward = 5.0 
+                    self.waypoint_index += 1 
+                else:
+                    reward = 100.0
+                    self.done = True
+        
+        self.state = next_state
         return self.state, reward, self.done, {}
 
-    def render(self, episode=0, t=0, mode='human'):
-        view_map = np.copy(self.maze)
-        view_map[self.goal] = 0.5 
+    def render(self, episode=0, t=0, sub_goal=None):
+        view_map = np.copy(self.maze).astype(float)
+        view_map[self.final_goal] = 0.3 
         view_map[self.state] = 0.8 
         
+        if self.sequential_mode:
+            active_target = self.goal
+            view_map[active_target] = 0.6 
+        else:
+            view_map[self.final_goal] = 0.6
+
         plt.clf()
-        plt.title(f'Episode: {episode} Step: {t}')
+        
+        if self.sequential_mode and self.waypoint_index < len(self.current_waypoints):
+            status = f"Target: CP {self.waypoint_index + 1}/{len(self.current_waypoints)} at {self.current_waypoints[self.waypoint_index]}"
+        else:
+            status = "Target: FINAL GOAL"
+            
+        plt.title(f'Ep: {episode} | {status}')
         plt.imshow(view_map, cmap='viridis')
         plt.xticks([]) 
         plt.yticks([])
@@ -127,19 +165,6 @@ class Maze(gym.Env):
         plt.draw()
         plt.pause(0.001)
 
-if __name__=='__main__':
-    env = Maze()
-    # Reduced figure size slightly since the grid is smaller
-    plt.figure(figsize=(5,5)) 
-    
-    for i_episode in range(1):
-        state = env.reset()
-        print(f'--- Starting Episode {i_episode} ---')
-        
-        for t in range(200):
-            action = env.action_space.sample()
-            state, reward, done, info = env.step(action)
-            env.render(i_episode, t)
-            if done:
-                print("Goal reached!")
-                break
+    def get_valid_indices(self):
+        valid_coords = np.argwhere(self.maze == 0)
+        return [int(self.grid_size * x + y) for x, y in valid_coords]
