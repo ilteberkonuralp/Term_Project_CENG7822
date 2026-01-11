@@ -552,560 +552,148 @@ config.learning_starts = 20000
 3. **Use FAST_MODE**: Set `FAST_MODE = True` for initial testing
 4. **Monitor Entropy**: SAC/TQC should maintain entropy > 0 throughout training
 
+
+
 ---
 
-## Discrete Grid Maze Environment
+# Discrete Grid Maze Environment
 
-In addition to the continuous PointMaze environment, this repository includes implementations for **discrete grid-based maze navigation**. This provides a simpler testbed for understanding goal-conditioned RL algorithms before scaling to continuous control.
+To strictly evaluate the algorithmic performance of Hierarchical RL without the overhead of physics simulation (MuJoCo), this project includes a fully custom, standalone discrete grid framework.
 
-### Overview
+## Key Features
 
-The discrete environment represents mazes as 2D grids where:
-- **State Space**: Integer grid position (x, y) or one-hot encoded state
-- **Action Space**: 4 discrete actions (Up, Down, Left, Right)
-- **Goal Space**: Target grid cell position
-- **Reward**: Sparse (+1 on reaching goal, 0 or -0.1 otherwise)
+* **Guaranteed Solvability**: The map generator recursively creates environments until it validates a clear path exists from Start → Checkpoints → Goal using BFS.
+* **Dynamic Checkpoints**: The environment can generate $N$ intermediate waypoints (sub-goals) along the optimal diagonal, facilitating curriculum learning or guided hierarchical exploration.
+* **Sequential Mode**: Optional mode where the agent must visit checkpoints in order (Start $\to$ CP1 $\to$ CP2 $\to$ Goal), providing a dense signal for hierarchical agents.
 
-This environment is particularly useful for:
-- Rapid prototyping and debugging of RL algorithms
-- Understanding HER behavior in a controlled setting
-- Educational purposes and algorithm visualization
-- Ablation studies without physics simulation overhead
+## File Structure
 
-### Discrete Environment Specifications
+The discrete implementation is self-contained in the root directory:
 
-```
-+---------------------------+-------------------+-------------------+
-| Property                  | Small Maze (10x10)| Large Maze (20x20)|
-+---------------------------+-------------------+-------------------+
-| Grid Size                 | 10 x 10           | 20 x 20           |
-| Number of States          | 100               | 400               |
-| Number of Actions         | 4                 | 4                 |
-| Optimal Path Length       | ~15-20 steps      | ~40-60 steps      |
-| Max Episode Steps         | 100               | 500               |
-| Wall Density              | ~20%              | ~25%              |
-+---------------------------+-------------------+-------------------+
-```
+| File | Description |
+|------|-------------|
+| `Main_training.py` | Entry point. Orchestrates training, handles multiprocessing, and manages CSV logging. |
+| `maze.py` | The custom Gym-like environment. Handles map generation, valid path validation, and Matplotlib rendering. |
+| `HAC_HER.py` | **Hierarchical Actor-Critic**. Implements the 2-level hierarchy (Meta/Worker) with Hindsight. |
+| `Sac_HER.py` | **Soft Actor-Critic**. Adapted for discrete action spaces with automatic entropy tuning. |
+| `TQC_HER.py` | **Truncated Quantile Critics**. Distributional RL adapted for discrete domains. |
 
-### Discrete File Structure
+---
 
-```
-discrete/
-|
-+-- environments/
-|   +-- grid_maze.py           # Core maze environment
-|   +-- maze_layouts.py        # Predefined maze configurations
-|   +-- wrappers.py            # Goal-conditioned wrapper
-|
-+-- agents/
-|   +-- dqn_discrete.py        # DQN for discrete mazes
-|   +-- dqn_her_discrete.py    # DQN + HER implementation
-|   +-- sac_discrete.py        # SAC with discrete action head
-|   +-- tqc_discrete.py        # TQC for discrete environments
-|   +-- hac_discrete.py        # HAC with discrete low-level
-|
-+-- buffers/
-|   +-- replay_buffer.py       # Standard experience replay
-|   +-- her_buffer.py          # HER-augmented buffer
-|   +-- hierarchical_buffer.py # HAC replay buffer
-|
-+-- utils/
-|   +-- visualization.py       # Maze rendering and plotting
-|   +-- metrics.py             # Evaluation utilities
-|   +-- config.py              # Hyperparameter management
-|
-+-- experiments/
-|   +-- run_discrete.py        # Main experiment runner
-|   +-- ablations.py           # Ablation study scripts
-|
-+-- notebooks/
-    +-- discrete_demo.ipynb    # Interactive demonstration
-```
+## Environment Implementation (`maze.py`)
 
-### Discrete Maze Environment Implementation
-
-#### GridMazeEnv Class
+The `Maze` class provides a grid world where state is represented by grid coordinates $(x, y)$ or flattened indices.
 
 ```python
-class GridMazeEnv(gym.Env):
-    """
-    Discrete grid maze environment for goal-conditioned RL.
-    
-    Observation Space:
-        Dict with keys:
-        - 'observation': Current position (2,) or one-hot (grid_size^2,)
-        - 'achieved_goal': Current position (2,)
-        - 'desired_goal': Target position (2,)
-    
-    Action Space:
-        Discrete(4): 0=Up, 1=Down, 2=Left, 3=Right
-    
-    Reward:
-        Sparse: +1 if goal reached, -0.1 step penalty (optional)
-    """
-    
-    def __init__(
-        self,
-        grid_size: int = 10,
-        maze_layout: str = 'random',
-        use_one_hot: bool = False,
-        step_penalty: float = 0.0,
-        max_steps: int = 100
-    ):
-        ...
-```
-
-#### Maze Layouts
-
-```python
-MAZE_LAYOUTS = {
-    'empty': """
-        ..........
-        ..........
-        ..........
-        ..........
-        ..........
-        ..........
-        ..........
-        ..........
-        ..........
-        ..........
-    """,
-    
-    'simple_wall': """
-        ..........
-        ..........
-        ..........
-        ..........
-        .####.....
-        ..........
-        ..........
-        ..........
-        ..........
-        ..........
-    """,
-    
-    'u_maze': """
-        ..........
-        .########.
-        ..........
-        ..........
-        ..........
-        ..........
-        ..........
-        .########.
-        ..........
-        ..........
-    """,
-    
-    'four_rooms': """
-        ....#.....
-        ....#.....
-        ....#.....
-        ....#.....
-        ##.###.###
-        .....#....
-        .....#....
-        .....#....
-        .....#....
-        .....#....
-    """,
-}
-
-# Legend: '.' = free cell, '#' = wall
-```
-
-### Discrete Algorithm Implementations
-
-#### DQN for Discrete Mazes
-
-```python
-class DiscreteDQN:
-    """
-    Goal-conditioned DQN for discrete grid mazes.
-    
-    Architecture:
-        State Embedding: grid_size^2 -> 64 (if one-hot)
-                    or:  2 -> 64 (if coordinate)
-        Goal Embedding:  2 -> 64
-        Combined: 128 -> 256 -> 256 -> 4 (Q-values)
-    """
-    
-    def __init__(
-        self,
-        state_dim: int,
-        goal_dim: int = 2,
-        hidden_dims: List[int] = [256, 256],
-        embedding_dim: int = 64,
-        learning_rate: float = 1e-3,
-        gamma: float = 0.99,
-        epsilon_start: float = 1.0,
-        epsilon_end: float = 0.05,
-        epsilon_decay: float = 0.995,
-        target_update_freq: int = 100,
-        device: str = 'cpu'
-    ):
-        ...
-    
-    def select_action(self, state, goal, deterministic=False):
-        """Epsilon-greedy action selection."""
-        ...
-    
-    def update(self, batch):
-        """Standard DQN update with target network."""
-        ...
-```
-
-#### HER Buffer for Discrete Environments
-
-```python
-class DiscreteHERBuffer:
-    """
-    Hindsight Experience Replay buffer for discrete mazes.
-    
-    Strategies:
-        - 'future': Sample k states from future in episode
-        - 'final': Use final achieved state as hindsight goal
-        - 'episode': Sample randomly from episode
-    """
-    
-    def __init__(
-        self,
-        buffer_size: int = 100000,
-        her_k: int = 4,
-        strategy: str = 'future',
-        reward_fn: Callable = None
-    ):
-        ...
-    
-    def store_episode(self, episode: List[Transition]):
-        """Store episode and generate HER samples."""
-        for t, transition in enumerate(episode):
-            # Store original transition
-            self.buffer.append(transition)
-            
-            # Generate hindsight transitions
-            if self.strategy == 'future':
-                future_indices = np.random.choice(
-                    range(t + 1, len(episode)),
-                    size=min(self.her_k, len(episode) - t - 1),
-                    replace=False
-                )
-                for idx in future_indices:
-                    hindsight_goal = episode[idx].achieved_goal
-                    hindsight_reward = self.reward_fn(
-                        transition.next_state, hindsight_goal
-                    )
-                    self.buffer.append(Transition(
-                        state=transition.state,
-                        action=transition.action,
-                        reward=hindsight_reward,
-                        next_state=transition.next_state,
-                        goal=hindsight_goal,
-                        done=hindsight_reward > 0
-                    ))
-```
-
-#### Discrete HAC Implementation
-
-```python
-class DiscreteHAC:
-    """
-    Hierarchical Actor-Critic for discrete grid mazes.
-    
-    High-Level: Outputs subgoal grid cells
-    Low-Level: DQN selecting discrete actions to reach subgoal
-    """
-    
-    def __init__(
-        self,
-        grid_size: int,
-        subgoal_period: int = 5,
-        high_level_lr: float = 1e-3,
-        low_level_lr: float = 1e-3,
-        use_her: bool = True,
-        subgoal_test_prob: float = 0.3,
-        device: str = 'cpu'
-    ):
-        # High-level: outputs subgoal as (x, y) coordinate
-        self.high_policy = DiscreteSubgoalPolicy(
-            state_dim=2,
-            goal_dim=2,
-            grid_size=grid_size,
-            hidden_dims=[128, 128]
-        )
-        
-        # Low-level: DQN to reach subgoals
-        self.low_policy = DiscreteDQN(
-            state_dim=2,
-            goal_dim=2,  # subgoal
-            hidden_dims=[128, 128]
-        )
-        
-        self.subgoal_period = subgoal_period
-        self.use_her = use_her
-        ...
-```
-
-### Running Discrete Experiments
-
-#### Quick Start
-
-```python
-from discrete.environments import GridMazeEnv
-from discrete.agents import DiscreteDQN, DiscreteHERBuffer
-from discrete.utils import DiscreteConfig
-
-# Create environment
-env = GridMazeEnv(
-    grid_size=10,
-    maze_layout='four_rooms',
-    use_one_hot=False,
-    max_steps=100
+env = Maze(
+    grid_size=30,          # 30x30 Grid
+    seed=21,               # Deterministic generation
+    sequential_mode=True,  # If True, goal is the next Checkpoint. If False, goal is Final.
+    num_checkpoints=8      # Number of intermediate waypoints
 )
-
-# Create agent
-agent = DiscreteDQN(
-    state_dim=2,
-    goal_dim=2,
-    hidden_dims=[256, 256]
-)
-
-# Create HER buffer
-buffer = DiscreteHERBuffer(
-    buffer_size=50000,
-    her_k=4,
-    strategy='future'
-)
-
-# Training loop
-for episode in range(1000):
-    obs, info = env.reset()
-    episode_transitions = []
-    done = False
-    
-    while not done:
-        action = agent.select_action(
-            obs['observation'],
-            obs['desired_goal']
-        )
-        next_obs, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
-        
-        episode_transitions.append(Transition(
-            state=obs['observation'],
-            action=action,
-            reward=reward,
-            next_state=next_obs['observation'],
-            goal=obs['desired_goal'],
-            achieved_goal=next_obs['achieved_goal'],
-            done=done
-        ))
-        
-        obs = next_obs
-    
-    # Store with HER augmentation
-    buffer.store_episode(episode_transitions)
-    
-    # Update agent
-    if len(buffer) > 256:
-        batch = buffer.sample(256)
-        agent.update(batch)
 ```
 
-#### Command Line Interface
+**Reward Structure:**
+- Step Cost: -0.1 (encourages shortest path)
+- Wall/Out-of-Bounds: -0.5
+- Checkpoint Reached (Sequential Mode): +5.0
+- Final Goal Reached: +100.0
+
+---
+
+## Algorithm Details
+
+### 1. Hierarchical Actor-Critic (HAC) + HER
+**File:** `HAC_HER.py`
+
+Implemented as a two-level hierarchy specific to the grid domain:
+
+**Meta-Controller:**
+- **Action Space**: Discrete (Indices of all grid cells). It selects a state $s_{sub}$ to be the goal for the Worker.
+- **Policy**: DiscreteHERPolicyNetwork mapping State $\to$ Subgoal.
+
+**Worker:**
+- **Action Space**: Discrete (Up, Down, Left, Right).
+- **Policy**: Standard actor mapping State + Subgoal $\to$ Primitive Action.
+
+**Mechanisms:**
+- **Subgoal Testing**: With probability 0.3, the Meta-policy is paused to test if the Worker can actually reach the commanded subgoal. Failure results in a heavy penalty (-subgoal_horizon).
+- **Hindsight Action Transitions (HAT)**: The Meta-level transition is relabeled with the actual state achieved by the worker, allowing the Meta-agent to learn even when the Worker fails.
+
+### 2. TQC + HER (Discrete)
+**File:** `TQC_HER.py`
+
+A distributional approach adapted for discrete actions. Instead of a single Q-value, it models the distribution of returns.
+
+- **Critics**: 5 separate critic networks.
+- **Quantiles**: 25 quantiles per action per critic.
+- **Truncation**: Drops the top 2 quantiles (per critic) to control overestimation bias in stochastic/sparse environments.
+- **Target Calculation**: Uses a weighted mixture of atoms from all critics to form a robust target distribution.
+
+### 3. SAC + HER (Discrete)
+**File:** `Sac_HER.py`
+
+Standard Soft Actor-Critic adapted for discrete action spaces.
+
+- **Entropy**: Automatic entropy tuning ($\alpha$) ensures the agent continues exploring even after finding a suboptimal path.
+- **Q-Function**: $Q(s, a)$ is learned directly. The value function $V(s)$ is computed implicitly via expectation: $V(s) = \pi(s)^T [Q(s) - \alpha \log \pi(s)]$.
+
+---
+
+## Running Experiments
+
+The `Main_training.py` script is set up to run parallel training sessions for fair comparison.
+
+### Configuration
+
+Modify the `CONFIGURATION` section in `Main_training.py`:
+
+```python
+GRID_SIZE = 30           # Size of the maze (30x30 = 900 states)
+TRAIN_EPISODES = 150     # Number of training episodes
+NUM_CHECKPOINTS = 8      # Intermediate goals for guided exploration
+GLOBAL_SEED = 21         # Reproducibility
+```
+
+### Execution
+
+To run the parallel training benchmark:
 
 ```bash
-# Run DQN without HER on four_rooms maze
-python discrete/experiments/run_discrete.py \
-    --algorithm dqn \
-    --maze four_rooms \
-    --grid_size 10 \
-    --total_episodes 5000 \
-    --use_her false \
-    --seed 42
-
-# Run DQN with HER
-python discrete/experiments/run_discrete.py \
-    --algorithm dqn \
-    --maze four_rooms \
-    --grid_size 10 \
-    --total_episodes 5000 \
-    --use_her true \
-    --her_k 4 \
-    --seed 42
-
-# Run HAC with HER on larger maze
-python discrete/experiments/run_discrete.py \
-    --algorithm hac \
-    --maze u_maze \
-    --grid_size 20 \
-    --total_episodes 10000 \
-    --use_her true \
-    --subgoal_period 5 \
-    --seed 42
-
-# Run all ablations
-python discrete/experiments/ablations.py \
-    --output_dir results/discrete_ablations
+python Main_training.py
 ```
 
-### Discrete Configuration
+By default, this will launch 3 processes (SAC, TQC, HAC) simultaneously. The GUI rendering is disabled during parallel training to prevent crashing, but CSV logs are generated in real-time.
 
-```python
-@dataclass
-class DiscreteConfig:
-    # Environment
-    grid_size: int = 10
-    maze_layout: str = 'four_rooms'
-    use_one_hot: bool = False
-    max_episode_steps: int = 100
-    step_penalty: float = 0.0
-    
-    # Training
-    total_episodes: int = 5000
-    learning_rate: float = 1e-3
-    buffer_size: int = 50000
-    batch_size: int = 256
-    gamma: float = 0.99
-    
-    # DQN-specific
-    epsilon_start: float = 1.0
-    epsilon_end: float = 0.05
-    epsilon_decay: float = 0.995
-    target_update_freq: int = 100
-    
-    # HER
-    use_her: bool = True
-    her_strategy: str = 'future'
-    her_k: int = 4
-    
-    # HAC (hierarchical)
-    subgoal_period: int = 5
-    subgoal_test_prob: float = 0.3
-    
-    # Evaluation
-    eval_freq: int = 100  # episodes
-    n_eval_episodes: int = 50
-    seeds: List[int] = field(default_factory=lambda: [42, 123, 456])
-    
-    # Paths
-    log_dir: str = './logs/discrete'
-    save_models: bool = True
-```
+To visualize a single agent:
 
-### Discrete vs Continuous Comparison
+1. Open `Main_training.py`.
+2. Comment out the multiprocessing block at the bottom.
+3. Uncomment the single run line:
+   ```python
+   run_session("HAC", load_model=False, render_plots=True, record_model=True)
+   ```
+4. Run the script. A Matplotlib window will open showing the agent's progress, current path, and active subgoals.
 
-| Aspect | Discrete Grid Maze | Continuous PointMaze |
-|--------|-------------------|---------------------|
-| State Representation | Grid coordinates or one-hot | Position + velocity (R^4) |
-| Action Space | 4 discrete directions | Continuous force (R^2) |
-| Transition Dynamics | Deterministic grid moves | Physics simulation |
-| Computational Cost | Low (no physics) | High (MuJoCo) |
-| Episode Length | 50-200 steps | 100-1000 steps |
-| Training Time | Minutes | Hours |
-| Debugging | Easy (visualize grid) | Harder (render videos) |
-| Real-World Relevance | Limited | High (robot control) |
+## Results & Logging
 
-### Visualization for Discrete Mazes
+Training artifacts are saved in the `worker_outputs_{SIZE}x{SIZE}_v2` folder:
 
-```python
-from discrete.utils.visualization import MazeVisualizer
+- **Logs (.csv):**
+  - Columns: Episode, Reward, Steps, Critic_Loss, Actor_Loss.
+  - Use these to plot learning curves (Reward vs. Episode).
 
-viz = MazeVisualizer(env)
+- **Models (.pth):**
+  - Full PyTorch state dictionaries for Actors, Critics, and Alpha optimizers.
+  - Saved periodically and at the end of training.
 
-# Render single state
-viz.render_state(
-    agent_pos=(3, 4),
-    goal_pos=(8, 8),
-    path=[(3, 4), (4, 4), (5, 4), ...]
-)
+## Comparison Expectations
 
-# Animate episode
-viz.animate_episode(
-    episode_data,
-    save_path='episode.gif',
-    fps=5
-)
+In a sparse 30x30 grid:
 
-# Plot Q-value heatmap
-viz.plot_q_values(
-    agent,
-    goal=(8, 8),
-    action=0  # Up
-)
+- **SAC/TQC**: May struggle to find the goal initially without `NUM_CHECKPOINTS > 0` guiding them, or require extremely high exploration steps.
+- **HAC**: Should converge significantly faster by breaking the 900-state search space into smaller 10-step sub-problems, effectively "stitching" the path together via subgoals.
 
-# Plot visitation frequency
-viz.plot_visitation_heatmap(
-    visit_counts,
-    title='State Visitation Frequency'
-)
-```
-
-### Discrete Experiment Results
-
-Expected performance on Four Rooms (10x10) maze:
-
-| Algorithm | Success Rate | Mean Steps | Training Episodes |
-|-----------|--------------|------------|-------------------|
-| DQN (no HER) | 15-25% | 85+ | 5000 |
-| DQN + HER | 75-85% | 35-45 | 5000 |
-| SAC (discrete) | 30-40% | 70+ | 5000 |
-| SAC + HER | 85-92% | 30-40 | 5000 |
-| HAC (no HER) | 45-55% | 50-60 | 5000 |
-| HAC + HER | 88-95% | 25-35 | 5000 |
-
-Key observations from discrete experiments:
-1. HER provides significant improvement across all algorithms
-2. DQN benefits most from HER in discrete settings (unlike continuous)
-3. HAC achieves best sample efficiency
-4. Discrete environment allows faster iteration for hyperparameter tuning
-
-### Troubleshooting Discrete Experiments
-
-#### 1. Agent Stuck in Loops
-
-```python
-# Add exploration bonus to reward
-reward = base_reward + 0.01 * novelty_bonus
-
-# Or use intrinsic curiosity
-from discrete.agents import ICMWrapper
-agent = ICMWrapper(agent, curiosity_scale=0.1)
-```
-
-#### 2. HER Not Helping
-
-```python
-# Ensure episode stores achieved_goal correctly
-assert 'achieved_goal' in transition
-assert transition.achieved_goal is not None
-
-# Check reward function
-def compute_reward(achieved, desired, threshold=0.5):
-    distance = np.linalg.norm(achieved - desired)
-    return 1.0 if distance < threshold else 0.0
-```
-
-#### 3. Q-Values Exploding
-
-```python
-# Use gradient clipping
-torch.nn.utils.clip_grad_norm_(agent.parameters(), max_norm=1.0)
-
-# Or reduce learning rate
-config.learning_rate = 1e-4
-```
-
-#### 4. Suboptimal Paths with HAC
-
-```python
-# Reduce subgoal period for denser supervision
-config.subgoal_period = 3
-
-# Increase subgoal testing probability
-config.subgoal_test_prob = 0.5
-```
 
 ---
 
