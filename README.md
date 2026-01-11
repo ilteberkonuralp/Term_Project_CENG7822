@@ -41,8 +41,8 @@ Goal-conditioned reinforcement learning with sparse rewards presents a fundament
 | Algorithm | Exploration | HER Synergy | Best Use Case |
 |-----------|-------------|-------------|---------------|
 | DQN | ε-greedy | ❌ Poor | Dense rewards only |
-| SAC | Entropy-based | ✅ Excellent | General sparse-reward tasks |
-| TQC | Entropy-based | ✅ Excellent | When faster convergence needed |
+| SAC | Entropy-based | ✅ Good | General sparse-reward tasks |
+| TQC | Entropy-based | ✅ Good | When faster convergence needed |
 | HAC | Hierarchical | ✅ Good | Long-horizon tasks (>50 steps) |
 
 ### Environment
@@ -166,7 +166,7 @@ Critic: [state; goal; action] → MLP(256, 256) → 25 quantiles (×3 critics)
 - 75 total quantiles → sort → drop 6 → average remaining
 ```
 
-**Advantage over SAC**: Richer gradient signal from distributional learning, ~20% faster convergence in our experiments.
+**Advantage over SAC**: Richer gradient signal from distributional learning.
 
 ### 4. Hierarchical Actor-Critic (HAC)
 
@@ -388,9 +388,6 @@ class DiscreteActionWrapper(gym.ActionWrapper):
         1: Down  → [0.0, -1.0]
         2: Left  → [-1.0, 0.0]
         3: Right → [+1.0, 0.0]
-    
-    Each discrete action is repeated 5 times for 
-    meaningful displacement in the physics simulation.
     """
 ```
 
@@ -457,15 +454,6 @@ class HACReplayBuffer:
 }
 ```
 
-### Expected Results
-
-| Method | Small Maze | Large Maze |
-|--------|------------|------------|
-| DQN (Dense) | ~60-80% | ~20-40% |
-| DQN + HER | ~0-5% | ~0% |
-| SAC + HER | ~80-95% | ~60-80% |
-| TQC + HER | ~85-95% | ~65-85% |
-| HAC + HER | ~70-85% | ~60-75% |
 
 ---
 
